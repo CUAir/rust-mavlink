@@ -311,7 +311,7 @@ pub fn read_v2_msg<M: Message, R: Read>(
         r.read_exact(&mut sign)?;
     }
 
-    let mut crc_calc = CRCu16::crc16mcrf4cc();
+    let mut crc_calc = CRCu16::crc16_x25();
     crc_calc.digest(header_buf);
     crc_calc.digest(payload);
     let extra_crc = M::extra_crc(msgid);
