@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 extern crate bytes;
 use crate::error::ParserError;
-use bytes::{Buf, Bytes, IntoBuf};
+use bytes::{Buf, Bytes, BytesMut};
 
 extern crate bitflags;
 extern crate num_derive;
@@ -159,7 +159,9 @@ impl<M: Message> MavFrame<M> {
 
     /// Deserialize MavFrame from a slice that has been received from, for example, a socket.
     pub fn deser(version: MavlinkVersion, input: &[u8]) -> Result<Self, ParserError> {
-        let mut buf = Bytes::from(input).into_buf();
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(input);
+        let mut buf = buf.freeze();
 
         let system_id = buf.get_u8();
         let component_id = buf.get_u8();
@@ -175,7 +177,7 @@ impl<M: Message> MavFrame<M> {
             MavlinkVersion::V1 => buf.get_u8() as u32,
         };
 
-        match M::parse(version, msg_id, &buf.collect::<Vec<u8>>()) {
+        match M::parse(version, msg_id, buf.as_ref()) {
             Ok(msg) => Ok(MavFrame {
                 header,
                 msg,
@@ -250,92 +252,90 @@ pub fn read_v1_msg<M: Message, R: Read>(
 
 const MAVLINK_IFLAG_SIGNED: u8 = 0x01;
 
-/// Read a MAVLink v2  message from a Read stream.
+/// Read a MAVLink v2 message from a Read stream.
 pub fn read_v2_msg<M: Message, R: Read>(
     r: &mut R,
 ) -> Result<(MavHeader, M), error::MessageReadError> {
-    loop {
-        // search for the magic framing value indicating start of mavlink message
-        if r.read_u8()? != MAV_STX_V2 {
-            continue;
-        }
-
-        //        println!("Got STX2");
-        let payload_len = r.read_u8()? as usize;
-        //        println!("Got payload_len: {}", payload_len);
-        let incompat_flags = r.read_u8()?;
-        //        println!("Got incompat flags: {}", incompat_flags);
-        let compat_flags = r.read_u8()?;
-        //        println!("Got compat flags: {}", compat_flags);
-
-        let seq = r.read_u8()?;
-        //        println!("Got seq: {}", seq);
-
-        let sysid = r.read_u8()?;
-        //        println!("Got sysid: {}", sysid);
-
-        let compid = r.read_u8()?;
-        //        println!("Got compid: {}", compid);
-
-        let mut msgid_buf = [0; 4];
-        msgid_buf[0] = r.read_u8()?;
-        msgid_buf[1] = r.read_u8()?;
-        msgid_buf[2] = r.read_u8()?;
-
-        let header_buf = &[
-            payload_len as u8,
-            incompat_flags,
-            compat_flags,
-            seq,
-            sysid,
-            compid,
-            msgid_buf[0],
-            msgid_buf[1],
-            msgid_buf[2],
-        ];
-
-        let msgid: u32 = u32::from_le_bytes(msgid_buf);
-        //        println!("Got msgid: {}", msgid);
-
-        //provide a buffer that is the maximum payload size
-        let mut payload_buf = [0; 255];
-        let payload = &mut payload_buf[..payload_len];
-
-        r.read_exact(payload)?;
-
-        let crc = r.read_u16::<LittleEndian>()?;
-
-        if (incompat_flags & 0x01) == MAVLINK_IFLAG_SIGNED {
-            let mut sign = [0; 13];
-            r.read_exact(&mut sign)?;
-        }
-
-        let mut crc_calc = CRCu16::crc16mcrf4cc();
-        crc_calc.digest(header_buf);
-        crc_calc.digest(payload);
-        let extra_crc = M::extra_crc(msgid);
-
-        crc_calc.digest(&[extra_crc]);
-        let recvd_crc = crc_calc.get_crc();
-        if recvd_crc != crc {
-            // bad crc: ignore message
-            // println!("msg id {} payload_len {} , crc got {} expected {}", msgid, payload_len, crc, recvd_crc );
-            continue;
-        }
-
-        return M::parse(MavlinkVersion::V2, msgid, payload)
-            .map(|msg| {
-                (
-                    MavHeader {
-                        sequence: seq,
-                        system_id: sysid,
-                        component_id: compid,
-                    },
-                    msg,
-                )
-            })
-            .map_err(|err| err.into());
+    // search for the magic framing value indicating start of mavlink message
+    if r.read_u8()? != MAV_STX_V2 {
+        return Err(error::MessageReadError::Parse(ParserError::NoMagic))
     }
+
+    //        println!("Got STX2");
+    let payload_len = r.read_u8()? as usize;
+    //        println!("Got payload_len: {}", payload_len);
+    let incompat_flags = r.read_u8()?;
+    //        println!("Got incompat flags: {}", incompat_flags);
+    let compat_flags = r.read_u8()?;
+    //        println!("Got compat flags: {}", compat_flags);
+
+    let seq = r.read_u8()?;
+    //        println!("Got seq: {}", seq);
+
+    let sysid = r.read_u8()?;
+    //        println!("Got sysid: {}", sysid);
+
+    let compid = r.read_u8()?;
+    //        println!("Got compid: {}", compid);
+
+    let mut msgid_buf = [0; 4];
+    msgid_buf[0] = r.read_u8()?;
+    msgid_buf[1] = r.read_u8()?;
+    msgid_buf[2] = r.read_u8()?;
+
+    let header_buf = &[
+        payload_len as u8,
+        incompat_flags,
+        compat_flags,
+        seq,
+        sysid,
+        compid,
+        msgid_buf[0],
+        msgid_buf[1],
+        msgid_buf[2],
+    ];
+
+    let msgid: u32 = u32::from_le_bytes(msgid_buf);
+    //        println!("Got msgid: {}", msgid);
+
+    //provide a buffer that is the maximum payload size
+    let mut payload_buf = [0; 255];
+    let payload = &mut payload_buf[..payload_len];
+
+    r.read_exact(payload)?;
+
+    let crc = r.read_u16::<LittleEndian>()?;
+
+    if (incompat_flags & 0x01) == MAVLINK_IFLAG_SIGNED {
+        let mut sign = [0; 13];
+        r.read_exact(&mut sign)?;
+    }
+
+    let mut crc_calc = CRCu16::crc16mcrf4cc();
+    crc_calc.digest(header_buf);
+    crc_calc.digest(payload);
+    let extra_crc = M::extra_crc(msgid);
+
+    crc_calc.digest(&[extra_crc]);
+    let recvd_crc = crc_calc.get_crc();
+    if recvd_crc != crc {
+        // bad crc: ignore message
+        // println!("msg id {} payload_len {} , crc got {} expected {}", msgid, payload_len, crc, recvd_crc );
+        return Err(error::MessageReadError::Parse(ParserError::InvalidChecksum))
+    }
+
+    return M::parse(MavlinkVersion::V2, msgid, payload)
+        .map(|msg| {
+            (
+                MavHeader {
+                    sequence: seq,
+                    system_id: sysid,
+                    component_id: compid,
+                },
+                msg,
+            )
+        })
+        .map_err(|err| err.into());
 }
 
 /// Write a message using the given mavlink version

@@ -5,6 +5,8 @@ use std::fmt::{Display, Formatter};
 pub enum ParserError {
     InvalidFlag { flag_type: String, value: u32 },
     InvalidEnum { enum_type: String, value: u32 },
+    InvalidChecksum,
+    NoMagic,
     UnknownMessage { id: u32 },
 }
 
@@ -22,6 +24,8 @@ impl Display for ParserError {
                 enum_type, value
             ),
             ParserError::UnknownMessage { id } => write!(f, "Unknown message with ID {:?}", id),
+            ParserError::InvalidChecksum => write!(f, "Invalid checksum"),
+            ParserError::NoMagic => write!(f, "Message does not start with magic byte"),
         }
     }
 }
