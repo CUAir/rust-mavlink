@@ -231,8 +231,8 @@ pub fn read_v1_msg<M: Message, R: Read>(
     if recvd_crc != crc {
         return Err(error::MessageReadError::Parse(
             ParserError::InvalidChecksum {
-                expected: crc_expected,
-                actual: crc_actual,
+                expected: crc,
+                actual: recvd_crc,
             },
         ));
     }
