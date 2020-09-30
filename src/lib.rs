@@ -340,7 +340,12 @@ pub fn read_v2_msg<M: Message, R: Read>(
     if crc_actual != crc_expected {
         // bad crc: ignore message
         // println!("msg id {} payload_len {} , crc got {} expected {}", msgid, payload_len, crc, recvd_crc );
-        return Err(error::MessageReadError::Parse(ParserError::InvalidChecksum));
+        return Err(error::MessageReadError::Parse(
+            ParserError::InvalidChecksum {
+                expected: crc_expected,
+                actual: crc_actual,
+            },
+        ));
     }
 
     return M::parse(MavlinkVersion::V2, msgid, payload)
