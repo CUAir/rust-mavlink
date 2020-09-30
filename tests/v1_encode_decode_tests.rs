@@ -7,7 +7,7 @@ pub mod test_shared;
 mod test_v1_encode_decode {
 
     pub const HEARTBEAT_V1: &'static [u8] = &[
-        mavlink::MAV_STX,
+        mavlink::MAV_STX_V1,
         0x09,
         0xef,
         0x01,
