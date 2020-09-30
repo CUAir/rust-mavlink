@@ -252,13 +252,26 @@ pub fn read_v1_msg<M: Message, R: Read>(
 
 const MAVLINK_IFLAG_SIGNED: u8 = 0x01;
 
+fn crc(buf: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+
+    for &byte in buf {
+        let byte = byte as u16;
+        let tmp = byte ^ (crc & 0xFF);
+        let tmp = (tmp ^ (tmp << 4)) & 0xFF;
+        crc = (crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4);
+    }
+
+    crc
+}
+
 /// Read a MAVLink v2 message from a Read stream.
 pub fn read_v2_msg<M: Message, R: Read>(
     r: &mut R,
 ) -> Result<(MavHeader, M), error::MessageReadError> {
     // search for the magic framing value indicating start of mavlink message
     if r.read_u8()? != MAV_STX_V2 {
-        return Err(error::MessageReadError::Parse(ParserError::NoMagic))
+        return Err(error::MessageReadError::Parse(ParserError::NoMagic));
     }
 
     //        println!("Got STX2");
@@ -304,24 +317,30 @@ pub fn read_v2_msg<M: Message, R: Read>(
 
     r.read_exact(payload)?;
 
-    let crc = r.read_u16::<LittleEndian>()?;
+    let crc_expected = r.read_u16::<LittleEndian>()?;
 
     if (incompat_flags & 0x01) == MAVLINK_IFLAG_SIGNED {
         let mut sign = [0; 13];
         r.read_exact(&mut sign)?;
     }
 
-    let mut crc_calc = CRCu16::crc16_x25();
-    crc_calc.digest(header_buf);
-    crc_calc.digest(payload);
-    let extra_crc = M::extra_crc(msgid);
+    let mut crc_buf = vec![];
+    crc_buf.extend_from_slice(header_buf);
+    crc_buf.extend_from_slice(payload);
+    crc_buf.push(M::extra_crc(msgid));
+    let crc_actual = crc(crc_buf.as_ref());
 
-    crc_calc.digest(&[extra_crc]);
-    let recvd_crc = crc_calc.get_crc();
-    if recvd_crc != crc {
+    // let mut crc_calc = CRCu16::crc16ccitt_false();
+    // crc_calc.digest(header_buf);
+    // crc_calc.digest(payload);
+    // let extra_crc = ;
+
+    // crc_calc.digest(&[extra_crc]);
+    // let recvd_crc = crc_calc.get_crc();
+    if crc_actual != crc_expected {
         // bad crc: ignore message
         // println!("msg id {} payload_len {} , crc got {} expected {}", msgid, payload_len, crc, recvd_crc );
-        return Err(error::MessageReadError::Parse(ParserError::InvalidChecksum))
+        return Err(error::MessageReadError::Parse(ParserError::InvalidChecksum));
     }
 
     return M::parse(MavlinkVersion::V2, msgid, payload)
