@@ -210,45 +210,60 @@ pub fn read_v1_msg<M: Message, R: Read>(
     if r.read_u8()? != MAV_STX_V1 {
         return Err(error::MessageReadError::Parse(ParserError::NoMagic));
     }
-    let len = r.read_u8()? as usize;
+
+    let payload_len = r.read_u8()? as usize;
     let seq = r.read_u8()?;
     let sysid = r.read_u8()?;
     let compid = r.read_u8()?;
     let msgid = r.read_u8()?;
 
     let mut payload_buf = [0; 255];
-    let payload = &mut payload_buf[..len];
+    let payload = &mut payload_buf[..payload_len];
 
     r.read_exact(payload)?;
 
-    let crc = r.read_u16::<LittleEndian>()?;
+    let crc_expected = r.read_u16::<LittleEndian>()?;
 
-    let mut crc_calc = CRCu16::crc16mcrf4cc();
-    crc_calc.digest(&[len as u8, seq, sysid, compid, msgid]);
-    crc_calc.digest(payload);
-    crc_calc.digest(&[M::extra_crc(msgid.into())]);
-    let recvd_crc = crc_calc.get_crc();
-    if recvd_crc != crc {
+    let extra_crc = M::extra_crc(msgid as u32);
+
+    let header_buf = &[payload_len as u8, seq, sysid, compid, msgid];
+
+    // based on https://github.com/mavlink/c_library_v2/blob/master/checksum.h
+    let crc_actual = header_buf
+        .iter()
+        .chain(&payload_buf[..payload_len])
+        .chain(&[extra_crc])
+        .fold(0xFFFFu16, |accum, data| {
+            let tmp = data ^ (accum & 0xff) as u8;
+            let tmp = (tmp ^ (tmp << 4)) as u16;
+            (accum >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4)
+        });
+
+    if crc_actual != crc_expected {
         return Err(error::MessageReadError::Parse(
             ParserError::InvalidChecksum {
-                expected: crc,
-                actual: recvd_crc,
+                expected: crc_expected,
+                actual: crc_actual,
             },
         ));
     }
 
-    return M::parse(MavlinkVersion::V1, msgid as u32, payload)
-        .map(|msg| {
-            (
-                MavHeader {
-                    sequence: seq,
-                    system_id: sysid,
-                    component_id: compid,
-                },
-                msg,
-            )
-        })
-        .map_err(|err| err.into());
+    return M::parse(
+        MavlinkVersion::V1,
+        msgid as u32,
+        &payload_buf[..payload_len],
+    )
+    .map(|msg| {
+        (
+            MavHeader {
+                sequence: seq,
+                system_id: sysid,
+                component_id: compid,
+            },
+            msg,
+        )
+    })
+    .map_err(|err| err.into());
 }
 
 const MAVLINK_IFLAG_SIGNED: u8 = 0x01;
@@ -302,13 +317,19 @@ pub fn read_v2_msg<M: Message, R: Read>(
         r.read_exact(&mut sign)?;
     }
 
-    let mut crc_calc = CRCu16::crc16ccitt_false();
-    crc_calc.digest(header_buf);
-    crc_calc.digest(payload);
     let extra_crc = M::extra_crc(msgid);
 
-    crc_calc.digest(&[extra_crc]);
-    let crc_actual = crc_calc.get_crc();
+    // based on https://github.com/mavlink/c_library_v2/blob/master/checksum.h
+    let crc_actual = header_buf
+        .iter()
+        .chain(&payload_buf[..payload_len])
+        .chain(&[extra_crc])
+        .fold(0xFFFFu16, |accum, data| {
+            let tmp = data ^ (accum & 0xff) as u8;
+            let tmp = (tmp ^ (tmp << 4)) as u16;
+            (accum >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4)
+        });
+
     if crc_actual != crc_expected {
         return Err(error::MessageReadError::Parse(
             ParserError::InvalidChecksum {
@@ -318,7 +339,7 @@ pub fn read_v2_msg<M: Message, R: Read>(
         ));
     }
 
-    return M::parse(MavlinkVersion::V2, msgid, payload)
+    return M::parse(MavlinkVersion::V2, msgid, &payload_buf[..payload_len])
         .map(|msg| {
             (
                 MavHeader {
