@@ -7,40 +7,24 @@ mod process_files {
     use mavlink::error::MessageReadError;
 
     #[test]
-    pub fn all() {
+    pub fn get_file() {
         // Get path for download script
-        let test_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/download_log_files.sh")
+        let tlog = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/log.tlog")
             .canonicalize()
             .unwrap();
-        let test_script = test_script.to_str().unwrap();
 
-        // Run download script
-        let result = std::process::Command::new("sh").arg(test_script).output();
-        assert_eq!(result.is_ok(), true);
+        let tlog = tlog.to_str().unwrap();
 
-        // Grab all log files
-        let test_path = "/tmp/testlogs/";
-        let files = std::fs::read_dir(test_path).unwrap();
-        let mut files = files
-            .filter_map(Result::ok)
-            .filter(|d| d.path().extension().unwrap().to_str() == Some("tlog"));
+        let filename = std::path::Path::new(tlog);
+        let filename = filename.to_str().unwrap();
+        dbg!(filename);
 
-        while let Some(file) = files.next() {
-            let filename = file.file_name();
-            let filename = filename.to_str().unwrap();
-            let filename = std::path::Path::new(test_path)
-                .join(filename)
-                .canonicalize()
-                .unwrap();
-            let filename = filename.to_str().unwrap();
+        println!("Processing file: {}", &filename);
+        let connection_string = format!("file:{}", &filename);
 
-            println!("Processing file: {}", &filename);
-            let connection_string = format!("file:{}", &filename);
-
-            // Process file
-            process_file(&connection_string);
-        }
+        // Process file
+        process_file(&connection_string);
     }
 
     pub fn process_file(connection_string: &str) {
@@ -51,7 +35,7 @@ mod process_files {
         let mut counter = 0;
         loop {
             match vehicle.recv() {
-                Ok((_header, msg)) => {
+                Ok((_header, _msg)) => {
                     counter += 1;
                 }
                 Err(MessageReadError::Io(e)) => match e.kind() {
@@ -69,7 +53,7 @@ mod process_files {
 
         println!("Number of parsed messages: {}", counter);
         assert!(
-            counter > 22000,
+            counter == 1374,
             "Unable to hit the necessary amount of matches"
         );
     }

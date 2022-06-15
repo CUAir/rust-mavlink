@@ -143,9 +143,11 @@ impl MavProfile {
         let msg_crc = self.emit_msg_crc();
 
         let mav_message = self.emit_mav_message(&enum_names, &struct_names, &includes);
+        let mav_message_from_includes = self.emit_mav_message_from_includes(&includes);
         let mav_message_parse =
             self.emit_mav_message_parse(&enum_names, &struct_names, &msg_ids, &includes);
         let mav_message_crc = self.emit_mav_message_crc(&id_width, &msg_ids, &msg_crc, &includes);
+        let mav_message_name = self.emit_mav_message_name(&enum_names, &includes);
         let mav_message_id = self.emit_mav_message_id(&enum_names, &msg_ids, &includes);
         let mav_message_id_from_name =
             self.emit_mav_message_id_from_name(&enum_names, &msg_ids, &includes);
@@ -155,6 +157,7 @@ impl MavProfile {
 
         quote! {
             #comment
+            use crate::MavlinkVersion;
             #[allow(unused_imports)]
             use bytes::{Buf, BufMut, Bytes, BytesMut};
             #[allow(unused_imports)]
@@ -178,6 +181,9 @@ impl MavProfile {
             #[cfg(not(feature = "std"))]
             use alloc::vec::Vec;
 
+            #[cfg(not(feature = "std"))]
+            use alloc::string::ToString;
+
             #(#enums)*
 
             #(#msgs)*
@@ -185,8 +191,11 @@ impl MavProfile {
             #[derive(Clone, PartialEq, Debug)]
             #mav_message
 
+            #mav_message_from_includes
+
             impl Message for MavMessage {
                 #mav_message_parse
+                #mav_message_name
                 #mav_message_id
                 #mav_message_id_from_name
                 #mav_message_default_from_id
@@ -215,6 +224,22 @@ impl MavProfile {
                 #(#enums(#structs),)*
                 #(#includes,)*
             }
+        }
+    }
+
+    fn emit_mav_message_from_includes(&self, includes: &Vec<Ident>) -> Tokens {
+        let froms = includes.into_iter().map(|include| {
+            quote! {
+                impl From<crate::#include::MavMessage> for MavMessage {
+                    fn from(message: crate::#include::MavMessage) -> Self {
+                        MavMessage::#include(message)
+                    }
+                }
+            }
+        });
+
+        quote! {
+            #(#froms)*
         }
     }
 
@@ -275,6 +300,25 @@ impl MavProfile {
 
                         0
                     },
+                }
+            }
+        }
+    }
+
+    fn emit_mav_message_name(&self, enums: &Vec<Tokens>, includes: &Vec<Ident>) -> Tokens {
+        let enum_names = enums
+            .iter()
+            .map(|enum_name| {
+                let name = Ident::from(format!("\"{}\"", enum_name));
+                quote!(#name)
+            })
+            .collect::<Vec<Tokens>>();
+
+        quote! {
+            fn message_name(&self) -> &'static str {
+                match self {
+                    #(MavMessage::#enums(..) => #enum_names,)*
+                    #(MavMessage::#includes(msg) => msg.message_name(),)*
                 }
             }
         }
@@ -504,8 +548,18 @@ impl MavMessage {
                 #[cfg(not(feature = "emit-description"))]
                 let description = Ident::from("");
 
+                // From MAVLink specification:
+                // If sent by an implementation that doesn't have the extensions fields
+                // then the recipient will see zero values for the extensions fields.
+                let serde_default = if field.is_extension {
+                    Ident::from(r#"#[cfg_attr(feature = "serde", serde(default))]"#)
+                } else {
+                    Ident::from("")
+                };
+
                 quote! {
                     #description
+                    #serde_default
                     #nametype
                 }
             })
@@ -556,13 +610,14 @@ impl MavMessage {
                 let avail_len = _input.len();
 
                 // fast zero copy
-                let mut buf = BytesMut::new();
-                buf.extend_from_slice(_input);
+                let mut buf = BytesMut::from(_input);
 
                 // handle payload length truncuation due to empty fields
                 if avail_len < #encoded_len_name {
                     //copy available bytes into an oversized buffer filled with zeros
-                    buf.resize(#encoded_len_name, 0)
+                    let mut payload_buf  = [0; #encoded_len_name];
+                    payload_buf[0..avail_len].copy_from_slice(_input);
+                    buf = BytesMut::from(&payload_buf[..]);
                 }
 
                 let mut buf = buf.freeze();
